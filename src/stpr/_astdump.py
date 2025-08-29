@@ -56,19 +56,25 @@ def _astdumpi_generic(node: ast.AST, indent: int, stream: TextIO) -> None:
     for field in node._fields:
         val = getattr(node, field, None)
         if isinstance(val, list):
-            _astdumpc(val, indent + 1, stream)
+            _write_indent(indent + 1, stream)
+            if len(val) == 0:
+                stream.write(f'{field}: []\n')
+            else:
+                stream.write(f'{field}:\n')
+                _astdumpc(val, indent + 2, stream)
         elif isinstance(val, ast.AST):
             _astdumpi(val, indent + 1, stream)
         elif val is None:
             pass
         else:
             stream.write(' ' * (indent + 1) * TAB_SZ)
-            stream.write(f'y {str(node)}\n')
+            stream.write(f'{field}: {val}\n')
 
 
 _GENERICS = {ast.Expr, ast.Await, ast.With, ast.For, ast.AsyncFor, ast.AsyncWith, ast.Subscript,
              ast.Assign, ast.Lambda, ast.Return, ast.Nonlocal, ast.Raise, ast.If, ast.While,
-             ast.withitem, ast.Module, ast.Expression}
+             ast.withitem, ast.Module, ast.Expression, ast.JoinedStr, ast.FormattedValue,
+             ast.arguments, ast.arg, ast.keyword}
 
 
 def _astdumpi(node: ast.AST, indent, stream):
@@ -80,9 +86,11 @@ def _astdumpi(node: ast.AST, indent, stream):
     _write_indent(indent, stream)
     if cls == ast.FunctionDef:
         stream.write('FunctionDef[%s] %s\n' % (node.name, _line_info(node)))
+        _astdumpi_generic(node.args, indent + 1, stream)
         _astdumpc(node.body, indent + 1, stream)
     elif cls == ast.AsyncFunctionDef:
         stream.write('AsyncFunctionDef[%s] %s\n' % (node.name, _line_info(node)))
+        _astdumpi_generic(node.args, indent + 1, stream)
         _astdumpc(node.body, indent + 1, stream)
     elif cls == ast.Call:
         stream.write('Call[%s: %s] %s\n' % (_get_func(node.func), getattr(node, '_type', None),
