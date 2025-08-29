@@ -1123,7 +1123,8 @@ def fn(*args, crt_frame=None, stpr_module_name=None, debug=False):
                 print(ex)
                 astdump(t2)
                 raise
-            return types.FunctionType(_get_code(code.co_consts), f.__globals__)
+            return types.FunctionType(_get_code(code.co_consts), f.__globals__, f.__name__,
+                                      f.__defaults__)
             f.__SP_CC = True
         return f
 
