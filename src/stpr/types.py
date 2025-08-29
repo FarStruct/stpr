@@ -2,6 +2,7 @@ import asyncio
 import collections
 import concurrent
 import threading
+import time
 from asyncio import events
 from typing import TypeVar
 
@@ -187,18 +188,32 @@ class Throttle:
     At this time, `Throttle` only implements the async context manager. This is automatically
     used in `stpr` functions when using the `with` keyword.
     """
-    def __init__(self, n: int) -> None:
+    def __init__(self, n: int, delay: float = 0) -> None:
         """
         :param n: Represents the maximum number of simultaneous parallel threads that this throttle
             will allow.
+        :param delay: An optional parameter that delays the operations such that they occur at a
+            rate of at most ``1/delay`` per second; that is, there is a minimum of ``delay`` seconds
+            between operations. If the throttle is entered such that successive operations occur
+            at time intervals larger than ``delay``, the operations are invoked immediately. If
+            this parameter is specified, the value of the ``n`` parameter must be ``1``.
         """
+        if delay != 0 and n != 1:
+            raise ValueError(f'A non-zero delay can only be specified with n = 1.')
         self.n = n
+        self.delay = delay
+        self.last_ts = 0
         self._queue = asyncio.Queue(maxsize=n)
 
     async def __aenter__(self):
         await self._queue.put(True)
+        if self.delay > 0:
+            to_wait = self.last_ts + self.delay - time.time()
+            if to_wait > 0:
+                await asyncio.sleep(to_wait)
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._queue.get_nowait()
+        self.last_ts = time.time()
 
 

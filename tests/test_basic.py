@@ -320,3 +320,32 @@ def _test_pass() -> None:
 
 def test_pass() -> None:
     st.run(_test_pass)
+
+
+@st.fn
+def _test_throttle_delay_2(t: st.Throttle) -> None:
+    with t:
+        st.wait(0.1)
+
+
+@st.fn
+def _test_throttle_delay() -> None:
+    t = st.Throttle(n=1, delay=0.1)
+
+    with st.parallel:
+        with st.seq:
+            _test_throttle_delay_2(t) # 0.0s; Throttled: 0.0s -> 0.1s
+        with st.seq:
+            st.wait(0.1)
+            _test_throttle_delay_2(t) # 0.1s; Throttled: 0.2s -> 0.3s
+        with st.seq:
+            st.wait(0.1)
+            _test_throttle_delay_2(t) # 0.1s; Throttled: 0.4s -> 0.5s
+        with st.seq:
+            st.wait(0.6)
+            _test_throttle_delay_2(t) # 0.6s; Throttled: 0.6s -> 0.7s
+
+
+def test_throttle_delay() -> None:
+    with expect_time(0.7):
+        st.run(_test_throttle_delay)
