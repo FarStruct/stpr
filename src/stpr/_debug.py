@@ -1,3 +1,5 @@
+import datetime
+
 import time
 from enum import Enum
 
@@ -5,7 +7,7 @@ from enum import Enum
 DEBUG = False
 
 
-_TS = None
+_TS = time.time()
 
 
 def _ts():
@@ -48,4 +50,5 @@ def _print(msg: str, color: Color = None, background: Color = None) -> None:
         cstr1 += f'\033[{40 + background.value}m'
     if color or background:
         cstr2 = '\033[0m'
-    print(f'{cstr1}{msg}{cstr2}')
+    date = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
+    print(f'{date} {cstr1}{msg}{cstr2}')

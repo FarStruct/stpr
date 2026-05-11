@@ -1,5 +1,7 @@
 import asyncio
-from typing import TypeVar, Tuple, Optional, AsyncIterator
+from abc import ABC, abstractmethod
+from typing import TypeVar, Tuple, Optional, AsyncIterator, Iterable, List, Callable, Awaitable, \
+    Generic
 
 import stpr
 from stpr.types import T
@@ -11,6 +13,43 @@ class _Guard:
 
 
 _GUARD = _Guard(StopAsyncIteration())
+
+
+class ChannelCallback(Generic[T], ABC):
+    """
+    An abstract base class for channel callbacks.
+
+    This class can be overridden in order to receive notifications from a channel using the channel
+    callback mechanism.
+    """
+    @abstractmethod
+    def value_appended(self, channel: 'Channel[T]', value: T) -> None:
+        """
+        This method is invoked when a value is added to a channel.
+
+        :param channel: The channel that the value was added to.
+        :param value: The value that was added
+        """
+        pass
+
+    @abstractmethod
+    def channel_error(self, channel: 'Channel[T]', error: Exception) -> None:
+        """
+        This method is called when a channel receives an error.
+
+        :param channel: The channel that received the error.
+        :param error: The error.
+        """
+        pass
+
+    @abstractmethod
+    def channel_closed(self, channel: 'Channel[T]') -> None:
+        """
+        This method is called when a channel is closed.
+
+        :param channel: The channel that was closed.
+        """
+        pass
 
 
 class Channel(AsyncIterator[T]):
@@ -60,9 +99,16 @@ class Channel(AsyncIterator[T]):
     In the above example, the channel is closed automatically when the `with` statement completes.
     Any exceptions thrown by `f()` will propagate out of `producer()`, but also be raised in the
     consumer function after all other values in the channel are consumed.
+
+    Iterating a channel concurrently (that is, having multiple concurrent for loops for the same
+    channel instance) will cause each iteration to produce distinct values in a nondeterministic
+    fashion. For deterministic behaviour, there should be no concurrent iteration on a channel.
+    If deterministic concurrent iteration on the values added to a channel is needed, use the
+    :meth:`~.split` method.
     """
     def __init__(self):
         self._q = asyncio.Queue()
+        self._callbacks: List[ChannelCallback[T]] = []
 
     async def __aenter__(self):
         pass
@@ -82,6 +128,21 @@ class Channel(AsyncIterator[T]):
             raise value.exception
         return value
 
+    def add_callback(self, cb: ChannelCallback) -> None:
+        """
+        Adds a callback to this reactive.
+
+        A callback can be used to get asynchronous notifications when a value is added to a
+        Channel or when the channel is closed/fails.
+
+        :param cb: An instance of :class:`.ChannelCallback`.
+        """
+        if cb is None:
+            raise ValueError(f'Invalid callback {cb}')
+        if not asyncio.iscoroutinefunction(cb):
+            raise ValueError(f'Callback {cb} is not a coroutine.')
+        self._callbacks.append(cb)
+
     async def append(self, value: T) -> None:
         """
         Appends a value to this channel.
@@ -89,11 +150,10 @@ class Channel(AsyncIterator[T]):
         :param value: The value to append.
         """
         await self._q.put(value)
+        if self._callbacks:
+            self._notify_append(value)
 
     def _append_now(self, value: T) -> None:
-        self._q.put_nowait(value)
-
-    def __iadd__(self, value: T) -> None:
         self._q.put_nowait(value)
 
     def close(self) -> None:
@@ -105,6 +165,8 @@ class Channel(AsyncIterator[T]):
         that is used to consume values from this channel.
         """
         self._q.put_nowait(_GUARD)
+        if self._callbacks:
+            self._notify_close()
 
     def fail(self, exception: Exception) -> None:
         """
@@ -114,6 +176,61 @@ class Channel(AsyncIterator[T]):
         made to consume that value, ``exception`` is raised instead.
         """
         self._q.put_nowait(_Guard(exception))
+        if self._callbacks:
+            self._notify_failure(exception)
+
+    def _notify_append(self, value: T) -> None:
+        for cb in self._callbacks:
+            cb.value_appended(self, value)
+
+    def _notify_closed(self, value: T) -> None:
+        for cb in self._callbacks:
+            cb.channel_closed(self)
+
+    def _notify_failure(self, e: Exception) -> None:
+        for cb in self._callbacks:
+            cb.channel_error(self, e)
+
+    def split(self) -> 'Channel[T]':
+        """
+        Splits this channel.
+
+        This method returns a new channel that will receive all the values that
+        this channel receives, including errors. The returned channel will be
+        closed when this channel is closed. The returned channel can, in turn
+        be split further.
+
+        Iterating on both this channel and the channel returned by this method
+        will produce the values added on the channel in sequence for each
+        iteration provided that at most one iteration is active on each at a
+        given time.
+        :return:
+        """
+        split = _SplitChannel()
+        self.add_callback(split)
+        return split
+
+    async def drain(self, dest: List[T]) -> None:
+        """
+        Drains this channel into a list.
+
+        One by one, remove all items from this channel until the channel is
+        empty and add them to the given list. This method can be used to
+        periodically bulk-collect items that have accumulated in this channel.
+
+        :param dest: A list to drain this channel into.
+        """
+
+
+class _SplitChannel(Channel[T], ChannelCallback):
+    def value_appended(self, channel: 'Channel[T]', value: T):
+        self.append(value)
+
+    def channel_error(self, channel: 'Channel[T]', error: Exception):
+        self.fail(error)
+
+    def channel_closed(self, channel: 'Channel[T]'):
+        self.close()
 
 
 async def select(*args: Channel[T]) -> Channel[Tuple[T, Channel[T]]]:

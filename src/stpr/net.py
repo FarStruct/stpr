@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import AbstractAsyncContextManager
-from socket import socket
+import socket
 
 from stpr.channels import Channel
 

@@ -8,6 +8,7 @@ from contextlib import AbstractAsyncContextManager
 from enum import Enum
 from typing import Tuple, List, Optional, Coroutine, Type, Dict, Callable, Set, Union, Iterable
 
+from stpr.functions import start
 from stpr._astdump import astdump, astdumps
 from stpr._debug import debug_print, Color, _ts, DEBUG, _print
 
@@ -16,6 +17,8 @@ _SAFE_MODULES.add('stpr')
 _SAFE_MODULES.add('stpr.transformer')
 _SAFE_MODULES.add('stpr.types')
 _SAFE_MODULES.add('stpr.reactive')
+_SAFE_MODULES.add('stpr.channels')
+_SAFE_MODULES.add('stpr.functions')
 
 
 class _Ref:
@@ -79,8 +82,8 @@ def _copy_params(src: ast.AST, dst: ast.AST) -> None:
     return dst
 
 
-def _transform(node: ast.AST, frame, sp_mod_name: str):
-    t = _Transformer(frame, sp_mod_name)
+def _transform(node: ast.AST, frame, sp_mod_name: str, autosync=True):
+    t = _Transformer(frame, sp_mod_name, autosync)
     t.visit(node)
     debug_print(frame, Color.BLUE)
     return node
@@ -478,11 +481,12 @@ class _Context():
 
 class _Transformer(ast.NodeTransformer):
 
-    def __init__(self, outer_frame, sp_mod_name: str):
+    def __init__(self, outer_frame, sp_mod_name: str, autosync: bool = True):
         self.outer_frame = outer_frame
         self.sp_mod_name = sp_mod_name
         self.context_stack = []
         self.crt_context = None
+        self.autosync = autosync
 
     def get_global(self, name: str) -> _Ref:
         return _find_global(self.outer_frame, name)
@@ -716,6 +720,8 @@ class _Transformer(ast.NodeTransformer):
                 return self._make_parallel_fn(node)
             elif ref.value == race:
                 return self._make_race_fn(node)
+            elif ref.value == start:
+                return self._make_start_fn(node)
             else:
                 raise Exception(f'Unhandled sp function: {ref.value}')
         elif ref.is_coro():
@@ -800,6 +806,8 @@ class _Transformer(ast.NodeTransformer):
                 inspect.iscoroutinefunction(val) or inspect.iscoroutine(val):
                 r = ast.AsyncWith()
                 _copy_params(node, r)
+                if inspect.iscoroutinefunction(val):
+                    item.context_expr = _wrap_await(item.context_expr)
                 r.items = [item]
                 if body_visited:
                     r.body = body
@@ -913,6 +921,14 @@ class _Transformer(ast.NodeTransformer):
         for i in range(len(call.args)):
             call.args[i] = self._to_coro(call.args[i])
         return ast.Await(call)
+
+    def _make_start_fn(self, call: ast.Call) -> ast.AST:
+        if len(call.keywords) > 0:
+            raise Exception('start() does not support keyword arguments.')
+        if len(call.args) != 1:
+            raise Exception('start() needs exactly one argument.')
+        call.args[0] = self._to_coro(call.args[0])
+        return call
 
     def _make_parallel(self, nodes: List[ast.AST],
                        r_nodes: Optional[List[ast.AST]] = None) -> List[ast.AST]:
@@ -1060,7 +1076,7 @@ def _get_code(t: Tuple[object]) -> types.CodeType:
     raise RuntimeError('Code object not found in %s' % t)
 
 
-def fn(*args, crt_frame=None, stpr_module_name=None, debug=False):
+def fn(*args, crt_frame=None, stpr_module_name=None, debug=False, autosync=True):
     """
     Decorator for Stpr functions.
 
@@ -1105,7 +1121,7 @@ def fn(*args, crt_frame=None, stpr_module_name=None, debug=False):
             if debug:
                 _print('Before instrumentation', Color.BLUE)
                 astdump(t)
-            t2 = _transform(t, crt_frame.f_back, stpr_module_name)
+            t2 = _transform(t, crt_frame.f_back, stpr_module_name, autosync)
             nlines = t2.body[0].end_lineno - t2.body[0].lineno
             t2.body[0].lineno = lineno
             t2.body[0].end_lineno = lineno + nlines
@@ -1123,6 +1139,45 @@ def fn(*args, crt_frame=None, stpr_module_name=None, debug=False):
                 print(ex)
                 astdump(t2)
                 raise
+            f.__SP_CC = True
+            r = types.FunctionType(_get_code(code.co_consts), f.__globals__, f.__name__,
+                                      f.__defaults__)
+            r.__doc__ = f.__doc__
+            r.__annotations__ = f.__annotations__
+            return r
+        return f
+
+    if len(args) > 1:
+        raise TypeError()
+    if len(args) == 0:
+        return inner
+    else:
+        return inner(args[0])
+
+
+def _fn_id(*args, crt_frame=None, stpr_module_name=None, debug=False):
+    if crt_frame is None:
+        crt_frame = inspect.currentframe()
+
+    def inner(f):
+        print(f'Defaults: {f.__defaults__}')
+        nonlocal debug, crt_frame, stpr_module_name
+        if DEBUG:
+            debug = True
+        if debug:
+            _print('Instrumenting %s' % f, Color.BLUE)
+        if not hasattr(f, '__SP_CC'):
+            lineno = f.__code__.co_firstlineno
+            t = ast.parse(textwrap.dedent(inspect.getsource(f)))
+            up = _MyUnparser()
+            if debug:
+                print(up.visit(t))
+            try:
+                code = compile(t, inspect.getfile(f), 'exec')
+            except Exception as ex:
+                print(ex)
+                astdump(t)
+                raise
             return types.FunctionType(_get_code(code.co_consts), f.__globals__, f.__name__,
                                       f.__defaults__)
             f.__SP_CC = True
@@ -1134,6 +1189,18 @@ def fn(*args, crt_frame=None, stpr_module_name=None, debug=False):
         return inner
     else:
         return inner(args[0])
+
+
+def _dump(f):
+    """
+    Prints the AST of a function.
+
+    """
+    def inner(f):
+       t = ast.parse(textwrap.dedent(inspect.getsource(f)))
+       astdump(t)
+
+    return inner(f)
 
 
 class seq:
@@ -1274,7 +1341,7 @@ class parallel:
         return _Transformer._parallel
 
     @staticmethod
-    async def _fn(*coros) -> Tuple[...]:
+    async def _fn(*coros) -> Tuple:
         tasks = []
         async with parallel() as ctx:
             for coro in coros:
@@ -1426,4 +1493,4 @@ class fork:
 
 _SP_CMS = [seq, parallel, parallelFor, fork]
 
-_SP_FNS = [parallel, race]
+_SP_FNS = [parallel, race, start]

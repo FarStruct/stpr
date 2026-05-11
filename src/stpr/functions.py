@@ -44,7 +44,10 @@ def _start(fn) -> concurrent.futures.Future:
         raise ValueError('Cannot run %s' % fn)
 
     #print(f'running {coro} in {id(_LOOP)}')
-    return asyncio.run_coroutine_threadsafe(coro, _LOOP)
+    loop = asyncio.get_running_loop()
+    if loop is None:
+        loop = _LOOP
+    return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
 def run(fn) -> object | None:
