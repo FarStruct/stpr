@@ -127,7 +127,7 @@ class Reactive(Generic[T]):
     async def _notify(self, value: T, old: T) -> None:
         for cb in self._callbacks:
             try:
-                await cb(self, value, old)
+                asyncio.create_task(cb(self, value, old))
             except TypeError as e:
                 raise TypeError(f'Failed to invoke callback {cb}: {e}')
 

@@ -81,5 +81,5 @@ async def _call(fn, *args, **kwargs):
         #print('Calling coro %s with %s, %s' % (fn, args, kwargs))
         return await fn(*args, **kwargs)
     else:
-        #print('Wrap-calling %s with %s' % (fn, args))
+        #print('Wrap-calling %s with %s, %s' % (fn, args, kwargs))
         return await _run_sync(fn, *args, **kwargs)

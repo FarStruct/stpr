@@ -23,6 +23,8 @@ def _get_func(node: ast.AST) -> str:
         return node.value
     if node.__class__ == ast.Subscript:
         return f'{_get_func(node.value)}[{_get_func(node.slice)}]'
+    if node.__class__ == ast.Call:
+        return f'call'
     raise Exception('?? %s' % node)
 
 
