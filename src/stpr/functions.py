@@ -2,6 +2,9 @@ import asyncio
 import concurrent
 import inspect
 import threading
+from asyncio import AbstractEventLoop
+from typing import Optional
+
 import time
 import traceback
 
@@ -32,7 +35,7 @@ async def wait(delay: int):
     await asyncio.sleep(delay)
 
 
-def _start(fn) -> concurrent.futures.Future:
+def _start(fn, loop: Optional[AbstractEventLoop] = None) -> concurrent.futures.Future:
     debug_print(type(fn), Color.BLUE)
     _debug._TS = time.time()
 
@@ -43,10 +46,11 @@ def _start(fn) -> concurrent.futures.Future:
     else:
         raise ValueError('Cannot run %s' % fn)
 
-    #print(f'running {coro} in {id(_LOOP)}')
-    loop = asyncio.get_running_loop()
     if loop is None:
-        loop = _LOOP
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = _LOOP
     return asyncio.run_coroutine_threadsafe(coro, loop)
 
 
@@ -70,7 +74,7 @@ def run(fn) -> object | None:
     :param fn: A coroutine or coroutine function to run.
     :return: This function returns the result returned by the coroutine.
     """
-    future = _start(fn)
+    future = _start(fn, loop=_LOOP)
     return future.result()
 
 
