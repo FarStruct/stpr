@@ -1,5 +1,6 @@
 import asyncio
 from abc import ABC, abstractmethod
+from asyncio import QueueEmpty
 from typing import TypeVar, Tuple, Optional, AsyncIterator, Iterable, List, Callable, Awaitable, \
     Generic
 
@@ -210,7 +211,7 @@ class Channel(AsyncIterator[T]):
         self.add_callback(split)
         return split
 
-    async def drain(self, dest: List[T]) -> None:
+    def drain(self, dest: List[T]) -> None:
         """
         Drains this channel into a list.
 
@@ -220,6 +221,11 @@ class Channel(AsyncIterator[T]):
 
         :param dest: A list to drain this channel into.
         """
+        try:
+            while True:
+                dest.append(self._q.get_nowait())
+        except QueueEmpty:
+            pass
 
 
 class _SplitChannel(Channel[T], ChannelCallback):

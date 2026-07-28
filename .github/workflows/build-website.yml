@@ -3,6 +3,7 @@ name: build-website
 on:
   push:
     branches: [ main, web_site, 'releases/**' ]
+  workflow_dispatch: # allow manual trigger
 
 jobs:
   publish:

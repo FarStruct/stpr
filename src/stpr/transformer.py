@@ -20,6 +20,8 @@ _SAFE_MODULES.add('stpr.reactive')
 _SAFE_MODULES.add('stpr.channels')
 _SAFE_MODULES.add('stpr.functions')
 
+_SELF = object()
+
 
 class _Ref:
     def __init__(self, value: Optional[object] = None, _type: Optional[Type] = None) -> None:
@@ -52,14 +54,32 @@ def _find_global(frame, name: str) -> object:
     try:
         return _Ref(frame.f_locals[name])
     except KeyError:
-        try:
-            return _Ref(frame.f_globals[name])
-        except KeyError:
-            try:
-                return _Ref(frame.f_builtins[name])
-            except KeyError:
-                debug_print(f'No reference found for "{name}"', Color.CYAN)
-                return None
+        pass
+    try:
+        return _Ref(frame.f_globals[name])
+    except KeyError:
+        pass
+    try:
+        return _Ref(frame.f_builtins[name])
+    except KeyError:
+        debug_print(f'No reference found for "{name}"', Color.CYAN)
+        return None
+
+def _find_code(frame, name: str) -> object:
+    """
+    Finds code definitions up the stack, such as the class curently
+    being defined.
+
+    :param frame:
+    :param name:
+    :return:
+    """
+    if frame.f_code.co_name == name:
+        return _Ref(_SELF)
+    elif frame.f_back is not None:
+        return _find_code(frame.f_back, name)
+    else:
+        return None
 
 
 def _get_type(node: ast.AST) -> Type:
@@ -478,6 +498,17 @@ class _Context():
     def var_names(self) -> Set[str]:
         return self.locals.vars.keys()
 
+    def dump(self) -> None:
+        print('Transformer stack:')
+        self._dump(0)
+
+    def _dump(self, n: int) -> None:
+        print(f'\tFrame {n} type {self.type}')
+        for name in self.locals.vars:
+            print(f'\t\t{name}: {self.locals.get_type(name)} = {self.locals.vars[name].value}')
+        if self.parent is not None:
+            self.parent._dump(n + 1)
+
 
 class _Transformer(ast.NodeTransformer):
 
@@ -503,6 +534,9 @@ class _Transformer(ast.NodeTransformer):
     def get_local(self, name: str) -> _Ref:
         return self._find_local(self.crt_context, name)
 
+    def get_code(self, name: str) -> _Ref:
+        return _find_code(self.outer_frame, name)
+
     def _get_member(self, cls, name):
         members = inspect.getmembers(cls)
         for n, v in members:
@@ -516,7 +550,11 @@ class _Transformer(ast.NodeTransformer):
             if ref:
                 return ref
             else:
-                return self.get_global(node.id)
+                ref = self.get_code(node.id)
+                if ref is None:
+                    return self.get_global(node.id)
+                else:
+                    return ref
         elif isinstance(node, ast.Attribute):
             ref = self.get_ref(node.value)
             if ref:
@@ -635,6 +673,12 @@ class _Transformer(ast.NodeTransformer):
                 return True
         return False
 
+    def visit_ClassDef(self, node):
+        self._enter_context(_ContextType.DEF)
+        self.crt_context.add_local(node.name, type=type, awaited=True)
+        super().visit_ClassDef(node)
+        self._exit_context()
+
     def visit_FunctionDef(self, node):
         self._enter_context(_ContextType.SEQ)
         self.crt_context.add_local(node.name, type=Coroutine, awaited=True)
@@ -646,6 +690,10 @@ class _Transformer(ast.NodeTransformer):
                 if len(node.body) == 0:
                     raise SyntaxError()
 
+                # This includes 'self', 'cls' and other such args.
+                # Unfortunately, we cannot really tell if the value of a
+                # self parameter is the object to which this method belongs
+                # or some random object passed explicitly by the caller
                 for arg in node.args.posonlyargs + node.args.args:
                     self.crt_context.add_local(arg.arg, None, None, False, True)
 
@@ -678,14 +726,18 @@ class _Transformer(ast.NodeTransformer):
 
         ref = self.get_ref(node)
 
-        if ref is None:
-            self.crt_nodes.append(self._await(node.id, node))
-            self.crt_context.set_awaited(node)
-        elif self.crt_context.is_param(node) and not self.crt_context.is_awaited(node):
-            self.crt_nodes.insert(0, self._await(node.id, node))
-            self.crt_context.set_awaited(node)
-        else:
-            pass
+        try:
+            if ref is None:
+                self.crt_nodes.append(self._await(node.id, node))
+                self.crt_context.set_awaited(node)
+            elif self.crt_context.is_param(node) and not self.crt_context.is_awaited(node):
+                self.crt_nodes.insert(0, self._await(node.id, node))
+                self.crt_context.set_awaited(node)
+            else:
+                pass
+        except KeyError:
+            self.crt_context.dump()
+            raise
 
         return node
 
@@ -747,11 +799,18 @@ class _Transformer(ast.NodeTransformer):
             return ast.Await(_sp_invoke('_call', node.func, self, args=node.args, kwargs=node.keywords))
 
     def _to_coro(self, node: ast.AST) -> ast.AST:
-        if isinstance(node, ast.Call):
-            ref = self.get_ref(node.func)
+        if isinstance(node, ast.Call) or isinstance(node, ast.Attribute) or isinstance(node, ast.Name):
+            if isinstance(node, ast.Call):
+                target = node.func
+                args = node.args
+            else:
+                target = node
+                args = []
+
+            ref = self.get_ref(target)
             if ref is None:
                 self.generic_visit(node)
-                return _sp_invoke('_call', node.func, self, args=node.args)
+                return _sp_invoke('_call', target, self, args=args)
             elif ref.is_coro():
                 return node
 
@@ -760,7 +819,7 @@ class _Transformer(ast.NodeTransformer):
                 type = node.func._type
                 if type == Coroutine:
                     return node
-            return _sp_invoke('_call', node.func, self, args=node.args)
+            return _sp_invoke('_call', target, self, args=args)
         else:
             tmp_name = '__sp_fn%s' % self.next_tmp_index()
             coro = ast.AsyncFunctionDef(name=tmp_name, args=_empty_ast_arguments(),
@@ -871,6 +930,14 @@ class _Transformer(ast.NodeTransformer):
                     if isinstance(elt, ast.Name):
                         var = elt.id
                         self.crt_context.add_local(var, type=_get_type(node.value), awaited=True)
+        return node
+
+    def visit_ListComp(self, node):
+        self._enter_context()
+        for gen in node.generators:
+            self.crt_context.add_local(gen.target.id, awaited=True)
+        self.generic_visit(node)
+        self._exit_context()
         return node
 
     def visit_AnnAssign(self, node):

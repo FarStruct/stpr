@@ -20,7 +20,7 @@ html_favicon = 'favicon.png'
 templates_path = ['_templates']
 
 html_title = "Stpr"
-html_logo = './_static/logo-large.png'
+html_logo = './_static/logo.svg'
 html_baseurl = '/stpr/'
 
 # Extra JS/CSS
